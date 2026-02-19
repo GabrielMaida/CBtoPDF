@@ -1,6 +1,7 @@
 *.cbr
 *.cbz
 *.pdf
+*.exe
 /old_files/
 *log.txt
 

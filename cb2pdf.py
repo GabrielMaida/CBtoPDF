@@ -4,6 +4,7 @@ import zipfile
 import tempfile
 import logging
 import gc
+import sys
 
 # External libraries required
 try:
@@ -18,7 +19,12 @@ except ImportError:
 	exit(1)
 
 # --- Configuration ---
-CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
+if getattr(sys, 'frozen', False):
+	# If running as a bundled executable (PyInstaller)
+	CURRENT_DIR = os.path.dirname(sys.executable)
+else:
+	# If running as a normal Python script
+	CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 OLD_DIR = os.path.join(CURRENT_DIR, 'old_files')
 LOG_FILE = os.path.join(CURRENT_DIR, 'conversion_error_log.txt')
 
