@@ -25,19 +25,20 @@ A robust, cross-platform Python script that converts `.cbz` and `.cbr` comic boo
 
 To process `.cbr` (RAR) files, your system must have an UnRAR executable available.
 
-- **Windows:** The script automatically looks for WinRAR in the standard installation paths (`C:/Program Files/WinRAR/UnRAR.exe`). If you have WinRAR installed, you are good to go.
+- **Windows:** The script automatically looks for WinRAR in the standard installation paths. _Alternatively, if you don't have WinRAR installed, you can simply download the Windows Release ZIP from this repository and extract the portable `UnRAR.exe` into the same folder as the script or executable._
+
 - **Ubuntu/Debian:**
 
-```bash
-sudo apt update
-sudo apt install unrar
-```
+   ```bash
+   sudo apt update
+   sudo apt install unrar
+   ```
 
 - **Arch Linux:**
 
-```bash
-sudo pacman -S unrar
-```
+   ```bash
+   sudo pacman -S unrar
+   ```
 
 ## Installation
 
@@ -58,7 +59,7 @@ sudo pacman -S unrar
 ## Usage
 
 1. **Prepare Your Directory**:
-   - Drop the `.cbz` or `.cbr` files into the same directory as the `cb2pdf.py` script.
+   - Drop the `.cbz` or `.cbr` files into the same directory as the `cb2pdf.py` script (and the `UnRAR.exe` if you are using the portable Windows release).
 
 2. **Run the Script**:
    - Open a terminal, navigate to the directory, and execute:
@@ -67,9 +68,17 @@ sudo pacman -S unrar
    python cb2pdf.py
    ```
 
-   *(On some Linux distributions, you might need to use `python3 cb2pdf.py`)*
+   _(On some Linux distributions, you might need to use `python3 cb2pdf.py`)_
 
    The script will process all archives, display a progress bar, create the PDFs, and move the originals to the `old_files` folder. Any errors will be registered in `conversion_error_log.txt`.
+
+## 🚀 Roadmap / Future Improvements
+
+We are constantly looking to improve this tool. Here are some features planned for future releases:
+
+- **Smart Archive Detection:** Automatically detect and correctly process misnamed archives (e.g., a true ZIP file renamed to `.cbr` or a RAR file renamed to `.cbz`) to prevent extraction failures without throwing errors.
+- **Reverse Conversion (PDF to CBZ):** Introduce a feature to convert comic PDFs back into `.cbz` archives. _(Note: Converting back to `.cbr` is not planned as RAR archive creation is a proprietary algorithm)._
+- **Command-Line Interface (CLI):** Add CLI arguments to allow advanced users to customize the conversion process (e.g., setting custom max resolutions, specifying input/output directories, or bypassing image resizing) directly from the terminal.
 
 ## How It Works
 
@@ -86,15 +95,15 @@ sudo pacman -S unrar
 
 - **ModuleNotFoundError:**
   You are missing one of the Python libraries. Run the installation command:
-  
+
   ```bash
   pip install img2pdf natsort rarfile pillow tqdm
   ```
 
 - **WARNING: UnRAR.exe could not be found / rarfile.RarCannotExec:**
   The script cannot extract `.cbr` files because it cannot find the UnRAR tool.
-  - *Windows:* Install WinRAR.
-  - *Linux:* Install the `unrar` package using your system's package manager (e.g., `pacman` or `apt`).
+  - _Windows:_ Install WinRAR or place the `UnRAR.exe` (from the Releases page) in the same folder as the script.
+  - _Linux:_ Install the `unrar` package using your system's package manager (e.g., `pacman` or `apt`).
 
 - **PDF pages are out of order:**
   Ensure the internal files of your archive are numbered consistently. While the script uses `natsort` to handle numbers logically, wildly different naming schemes inside the same archive might cause issues.
