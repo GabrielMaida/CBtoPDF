@@ -25,6 +25,11 @@ LOG_FILE = os.path.join(CURRENT_DIR, 'conversion_error_log.txt')
 # Tuple of allowed image extensions (Tuple is strictly required by the .endswith() string method)
 IMAGE_EXTENSIONS = ('.jpg', '.jpeg', '.png', '.webp', '.bmp', '.tiff', '.gif')
 
+# Define a bounding box (Width, Height) to avoid excessively large images.
+# 2560x2560 allows standard pages and horizontal spreads to scale down cleanly 
+# without breaking the aspect ratio.
+MAX_IMAGE_SIZE = (2560, 2560)
+
 # System directories to ignore to prevent errors with hidden metadata files
 IGNORED_FOLDERS = ('__MACOSX', '.git', '.ds_store')
 
@@ -142,7 +147,8 @@ def find_images_recursively(root_folder: str) -> list:
 def convert_image_to_compatible(image_path: str) -> str | None:
 	"""
 	Ensures an image is strictly compatible with the PDF specification.
-	Converts unsupported formats (WebP, GIF) or color spaces (CMYK, RGBA) to RGB JPEGs.
+	Resizes excessively large images to maintain a consistent reading experience
+	and converts unsupported formats to RGB JPEGs.
 	
 	Args:
 		image_path (str): The absolute path to the original image.
@@ -152,8 +158,11 @@ def convert_image_to_compatible(image_path: str) -> str | None:
 	"""
 	try:
 		with Image.open(image_path) as img:
-			# If the image is a standard JPEG or PNG without alpha, use it directly to save processing time
-			if img.format in ['JPEG', 'PNG'] and img.mode in ['RGB', 'L']:
+			# Check if the image exceeds the defined bounding box in any dimension
+			needs_resize = img.width > MAX_IMAGE_SIZE[0] or img.height > MAX_IMAGE_SIZE[1]
+			
+			# Optimization: Skip processing if it's already a standard, properly-sized image
+			if not needs_resize and img.format in ['JPEG', 'PNG'] and img.mode in ['RGB', 'L']:
 				return image_path
 			
 			new_path = os.path.splitext(image_path)[0] + ".temp.jpg"
@@ -164,10 +173,17 @@ def convert_image_to_compatible(image_path: str) -> str | None:
 				if img.mode != 'RGBA':
 					img = img.convert('RGBA')
 				bg.paste(img, mask=img.split()[3])
-				bg.save(new_path, quality=90)
+				img = bg  # Reassign to apply further transformations
 			else:
-				img.convert('RGB').save(new_path, quality=90)
+				img = img.convert('RGB')
+				
+			# Apply resizing if necessary
+			if needs_resize:
+				# thumbnail() modifies the image in-place, strictly preserving aspect ratio.
+				# LANCZOS is used to prevent Moiré patterns in comic book halftones.
+				img.thumbnail(MAX_IMAGE_SIZE, Image.Resampling.LANCZOS)
 			
+			img.save(new_path, quality=90)
 			return new_path
 	except Exception as e:
 		log_msg(f"  [WARNING] Corrupted or invalid image ignored: {os.path.basename(image_path)} - {e}", 'error')
