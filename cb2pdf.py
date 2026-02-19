@@ -1,110 +1,206 @@
-#!/usr/bin/env python3
-
 import os
 import shutil
-import time
-from PIL import Image
 import zipfile
-import rarfile
-from tqdm import tqdm
-from concurrent.futures import ThreadPoolExecutor
+import tempfile
+import logging
+import gc
 
-# Define directories
-current_dir = os.path.dirname(os.path.abspath(__file__))
-old_dir = os.path.join(current_dir, 'old')
-log_file = os.path.join(current_dir, 'error_log.txt')
+# External libraries required
+try:
+    import rarfile
+    import img2pdf
+    from natsort import natsorted
+    from PIL import Image
+    from tqdm import tqdm
+except ImportError:
+    print("ERROR: Missing libraries.")
+    print("Install with: pip install img2pdf natsort rarfile pillow tqdm")
+    exit(1)
 
-# Create 'old' directory if it doesn't exist
-if not os.path.exists(old_dir):
-    os.makedirs(old_dir)
+# Explicitly declaring UnRAR path
+UNRAR_PATH = "C:/Programs/WinRar/UnRAR.exe"
+# UNRAR_PATH = "C:/Program Files/WinRAR/UnRAR.exe"
 
-# Function to log errors
-def log_error(message):
-    with open(log_file, 'a') as log:
-        log.write(f"{message}\n")
+if os.path.exists(UNRAR_PATH):
+    rarfile.UNRAR_TOOL = UNRAR_PATH
+else:
+    # Tries to find in Program Files (x86)
+    UNRAR_X86_PATH = "C:/Program Files (x86)/WinRAR/UnRAR.exe"
+    if os.path.exists(UNRAR_X86_PATH):
+       rarfile.UNRAR_TOOL = UNRAR_X86_PATH
+    else:
+        print("WARNING: UnRAR.exe couldn't be found")
+        print("Make sure WinRAR is installed or put UnRAR.exe on the script folder")
 
-# Function to convert images to PDF without lowering quality
-def images_to_pdf(image_files, pdf_path, archive):
-    images = []
-    for image_file in image_files:
-        with archive.open(image_file) as file:
-            img = Image.open(file).convert('RGB')
-            images.append(img)
 
-    if images:
-        images[0].save(pdf_path, save_all=True, append_images=images[1:], resolution=300.0)
+# --- Configuration ---
+CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
+OLD_DIR = os.path.join(CURRENT_DIR, 'old_files')
+LOG_FILE = os.path.join(CURRENT_DIR ,'conversion_error_log.txt')
+IMAGE_EXTENSIONS = ['.jpg','.jpeg','.png','.webp','.bmp','.tiff','.gif']
 
-    # Cleanup
-    for img in images:
-        img.close()
+# System folders to ignore (Avoid errors with hidden files)
+IGNORED_FOLDERS = ['__MACOSX', '.git', '.ds_store']
 
-# Process CBZ files
-def process_cbz(file_path, pdf_path):
+
+# --- Log Setup ---
+logging.basicConfig(
+    filename=LOG_FILE,
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
+
+
+# --- Functions ---
+# Print to screen and save to log
+def log_msg(msg, type='info'):
+    print(msg)
+    if type == 'info':
+        logging.info(msg)
+    elif type == 'error':
+        logging.error(msg)
+
+# Setup folders
+def setup_folders():
+    if not os.path.exists(OLD_DIR):
+        os.makedirs(OLD_DIR)
+
+# Extracts CBZ or CBR, dealing with common errors
+def extract_files(file_path, destination_folder):
     try:
-        with zipfile.ZipFile(file_path, 'r') as archive:
-            image_files = sorted([name for name in archive.namelist() if name.lower().endswith(('jpg', 'jpeg', 'png'))])
-            images_to_pdf(image_files, pdf_path, archive)
+        if file_path.lower().endswith('.cbz'):
+            with zipfile.ZipFile(file_path, 'r') as zf:
+                zf.extractall(destination_folder)
+            return True
+        elif file_path.lower().endswith('.cbr'):
+            # Note: To run CBR on Windows, you need WinRAR/UnRAR installed and in your PATH
+            with rarfile.RarFile(file_path, 'r') as rf:
+                rf.extractall(destination_folder)
+            return True
     except Exception as e:
-        log_error(f"Error processing CBZ {file_path}: {str(e)}")
+        log_msg(f"  [ERROR] Failed on extracting '{os.path.basename(file_path)}': {e}", 'error')
+        return False
+    return False
 
-# Process CBR files using rarfile
-def process_cbr(file_path, pdf_path):
+# Search ALL the subfolders for images. Returns a list of absolute paths naturally sorted
+def find_images_recursively(root_folder):
+    image_files = []
+
+    for root, dirs, files in os.walk(root_folder):
+        # Remove ignored folders on search
+        dirs[:] = [d for d in dirs if d not in IGNORED_FOLDERS]
+        
+        for file in files:
+            if file.lower().endswith(IMAGE_EXTENSIONS) and not file.startswith('._'):
+                complete_path = os.path.join(root, file)
+                image_files.append(complete_path)
+    
+    # Natural sorting
+    return natsorted(image_files)
+
+# Grants the image being compatible with PDF. Converts WebP/GIF/CMYK to JPEG RGB if necessary
+def convert_image_to_compatible(image_path):
     try:
-        with rarfile.RarFile(file_path, 'r') as archive:
-            image_files = sorted([name for name in archive.namelist() if name.lower().endswith(('jpg', 'jpeg', 'png'))])
-            images_to_pdf(image_files, pdf_path, archive)
-    except rarfile.NotRarFile:
-        log_error(f"Not a valid RAR file: {file_path}")
+        with Image.open(image_path) as img:
+            # If regular JPEG/PNG, uses the original file (much quicker)
+            if img.format in ['JPEG', 'PNG'] and img.mode in ['RGB', 'L']:
+                return image_path
+            
+            # If not, converts to temporary JPEG
+            new_path = os.path.splitext(image_path)[0] + ".temp.jpg"
+            # Converts to RGB (removes alpha transparency which breaks JPG)
+            if img.mode in ('RGBA', 'LA') or (img.mode == 'P' and 'transparency' in img.info):
+                bg = Image.new('RGB', img.size, (255, 255, 255))
+                if img.mode != 'RGBA':
+                    img = img.convert('RGBA')
+                bg.paste(img, mask=img.split()[3])
+                bg.save(new_path, quality=90)
+            else:
+                img.convert('RGB').save(new_path, quality=90)
+            
+            return new_path
     except Exception as e:
-        log_error(f"Error processing CBR {file_path}: {str(e)}")
+        log_msg(f"  [WARNING] Image ignored (corrupted/invalid): {os.path.basename(image_path)} - {e}", 'error')
+        return None
 
-# Process individual file
-def process_file(filename):
-    file_path = os.path.join(current_dir, filename)
-    pdf_path = os.path.join(current_dir, filename.rsplit('.', 1)[0] + '.pdf')
+# Generates the final PDF from the list of processed images
+def create_pdf(image_list, pdf_out_path):
+    final_images = []
+    
+    # Prepara imagens
+    for img in image_list:
+        img_ok = convert_image_to_compatible(img)
+        if img_ok:
+            final_images.append(img_ok)
+            
+    if not final_images:
+        return False
 
     try:
-        # Process the file (CBZ or CBR)
-        if filename.lower().endswith('.cbz'):
-            process_cbz(file_path, pdf_path)
-        elif filename.lower().endswith('.cbr'):
-            process_cbr(file_path, pdf_path)
-
-        # Move the file to 'old' directory after successful processing
-        shutil.move(file_path, os.path.join(old_dir, filename))
-
+        with open(pdf_out_path, "wb") as f:
+            f.write(img2pdf.convert(final_images))
+        return True
     except Exception as e:
-        log_error(f"Failed to process {filename}: {str(e)}")
+        log_msg(f"  [ERROR] Failed on saving PDF '{os.path.basename(pdf_out_path)}': {e}", 'error')
+        # Tries to remove the corrupted PDF if created
+        if os.path.exists(pdf_out_path):
+            os.remove(pdf_out_path)
+        return False
 
-# Batch processing with threading
-def process_files_in_batches(batch_size=5, sleep_time=10, max_workers=4):
-    # Get all CBZ and CBR files in the current directory
-    file_list = [f for f in os.listdir(current_dir) if f.lower().endswith(('.cbz', '.cbr'))]
+def process_file(file):
+    file_path = os.path.join(CURRENT_DIR, file)
+    pdf_name = os.path.splitext(file)[0] + ".pdf"
+    pdf_path = os.path.join(CURRENT_DIR, pdf_name)
 
-    total_files = len(file_list)
+    # Creates temporary isolated folder
+    with tempfile.TemporaryDirectory() as temp_dir:
+        # 1. Extraction
+        if not extract_files(file_path, temp_dir):
+            return
 
-    # Process files in batches
-    for i in range(0, total_files, batch_size):
-        batch_files = file_list[i:i+batch_size]
-        print(f"Processing batch {i//batch_size + 1}/{(total_files + batch_size - 1)//batch_size}...")
+        # 2. Recursive search (Deep Scan)
+        imagens = find_images_recursively(temp_dir)
+        
+        if not imagens:
+            log_msg(f"  [ERRO] Nenhuma imagem encontrada dentro de {file} (Verifique se o arquivo não está vazio).", 'error')
+            return
 
-        # Progress bar for the batch
-        with tqdm(total=len(batch_files), desc=f"Processing batch {i//batch_size + 1}", ncols=100) as pbar:
-            with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                futures = [executor.submit(process_file, filename) for filename in batch_files]
+        # Informative log to debug
+        log_msg(f"  -> Encontradas {len(imagens)} imagens (Estrutura: {os.path.dirname(imagens[0])})")
 
-                # Wait for all files to finish and update the progress bar
-                for future in futures:
-                    future.result()
-                    pbar.update(1)
+        # 3. PDF generation
+        sucesso = create_pdf(imagens, pdf_path)
 
-        # Explicitly call garbage collection and take a break between batches
-        import gc
-        gc.collect()
+        # 4. Cleaning and movimentation
+        if sucesso:
+            try:
+                shutil.move(file_path, os.path.join(OLD_DIR, file))
+                log_msg(f"  [SUCESSO] {pdf_name} criado.")
+            except Exception as e:
+                log_msg(f"  [ERRO] PDF criado, mas falha ao mover original: {e}", 'error')
 
-        if i + batch_size < total_files:
-            print(f"Taking a break before processing the next batch...")
-            time.sleep(sleep_time)
+def main():
+    setup_folders()
+    
+    arquivos = [f for f in os.listdir(CURRENT_DIR) if f.lower().endswith(('.cbz', '.cbr'))]
+    
+    if not arquivos:
+        print("Nenhum arquivo .cbz ou .cbr encontrado.")
+        return
 
-# Run the batch processing
-process_files_in_batches(batch_size=5, sleep_time=10, max_workers=4)  # Batch of 5, 10 seconds pause, 4 threads
+    print(f"Iniciando processamento de {len(arquivos)} arquivos...")
+    print("="*60)
+
+    with tqdm(total=len(arquivos), unit="vol") as pbar:
+        for arquivo in arquivos:
+            pbar.set_description(f"Processando {arquivo[:15]}...")
+            process_file(arquivo)
+            pbar.update(1)
+            gc.collect()
+
+    print("="*60)
+    print("Processo finalizado. Verifique 'conversion_log.txt' em caso de erros.")
+
+if __name__ == "__main__":
+    main()
